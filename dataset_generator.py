@@ -8,6 +8,7 @@ Features:
 - Configurable size
 - Multiple regions, products, years
 - Export to CSV
+- https://www.kaggle.com/datasets/vivek468/superstore-dataset-final
 """
 
 import pandas as pd

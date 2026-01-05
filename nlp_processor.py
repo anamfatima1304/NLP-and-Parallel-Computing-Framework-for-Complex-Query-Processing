@@ -1,13 +1,8 @@
 """
-NLP Query Processor
-===================
-This module handles natural language query understanding and decomposition.
-
-Features:
-- Tokenization and entity extraction
-- Intent recognition (filter, group, aggregate, compare)
-- Query decomposition into executable sub-tasks
-- Output structured JSON format
+Enhanced NLP Query Processor with Parallel Task Generation
+===========================================================
+This version creates INDEPENDENT tasks that can execute in parallel,
+rather than sequential pipelines.
 """
 
 import re
@@ -15,274 +10,333 @@ import json
 from typing import List, Dict, Any
 
 
-class NLPQueryProcessor:
+class ParallelNLPQueryProcessor:
     """
-    Processes natural language queries and decomposes them into structured tasks.
+    Processes natural language queries and decomposes them into PARALLEL tasks.
+    Key difference: Creates independent filter/group/aggregate tasks instead of pipelines.
     """
     
     def __init__(self):
         # Keywords for different operations
-        self.filter_keywords = ['where', 'filter', 'with', 'having', 'that have']
+        self.filter_keywords = ['where', 'filter', 'with', 'having', 'that have', 'between']
         self.group_keywords = ['group by', 'grouped by', 'by', 'per', 'for each']
         self.aggregate_keywords = ['sum', 'total', 'average', 'avg', 'count', 'max', 'min', 'mean']
-        self.compare_keywords = ['compare', 'difference', 'versus', 'vs', 'between']
+        self.compare_keywords = ['compare', 'difference', 'versus', 'vs', 'between', 'and']
         
-        # Common fields in dataset
-        self.known_fields = ['product', 'region', 'year', 'month', 'sales', 'quantity', 
-                            'revenue', 'profit', 'category', 'customer']
+        # Common fields matching Kaggle Superstore dataset
+        self.known_fields = [
+            'product', 'region', 'year', 'month', 'date', 'order_date',
+            'sales', 'quantity', 'revenue', 'profit', 'discount',
+            'category', 'customer', 'segment', 'ship_mode',
+            'city', 'state', 'country', 'postal_code',
+            'product_name', 'customer_id', 'product_id'
+        ]
         
-        # Stop words to remove
-        self.stop_words = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 
-                          'to', 'for', 'of', 'with', 'by', 'from', 'show', 'me', 
-                          'get', 'find', 'all']
+        self.numeric_fields = ['sales', 'quantity', 'revenue', 'profit', 'discount', 'year']
     
     def preprocess(self, query: str) -> str:
-        """
-        Preprocess the query by converting to lowercase and cleaning.
-        """
+        """Preprocess the query by converting to lowercase and cleaning."""
         query = query.lower().strip()
         return query
     
-    def extract_entities(self, query: str) -> Dict[str, Any]:
+    def extract_all_conditions(self, query: str) -> List[Dict[str, Any]]:
         """
-        Extract entities like fields, values, and operators from the query.
-        
-        Args:
-            query: Natural language query string
-            
-        Returns:
-            Dictionary containing extracted entities
+        Extract ALL filter conditions from the query.
+        This creates MULTIPLE independent filter tasks.
         """
-        entities = {
-            'fields': [],
-            'values': [],
-            'operators': [],
-            'years': [],
-            'conditions': []
-        }
+        conditions = []
         
-        # Extract years (4-digit numbers)
+        # Extract year conditions (can be multiple years)
         years = re.findall(r'\b(19|20)\d{2}\b', query)
-        entities['years'] = [int(year) for year in years]
+        for year in years:
+            conditions.append({
+                'field': 'year',
+                'operator': '=',
+                'value': int(year)
+            })
         
-        # Extract known fields
-        for field in self.known_fields:
-            if field in query:
-                entities['fields'].append(field)
+        # Extract "field > value" patterns
+        greater_patterns = re.finditer(r'(sales|profit|quantity|discount|revenue)\s*(?:greater than|>)\s*(\d+\.?\d*)', query)
+        for match in greater_patterns:
+            field, value = match.groups()
+            conditions.append({
+                'field': field,
+                'operator': '>',
+                'value': float(value)
+            })
         
-        # Extract comparison operators
-        if '>' in query:
-            entities['operators'].append('>')
-        if '<' in query:
-            entities['operators'].append('<')
-        if '>=' in query or 'greater than or equal' in query:
-            entities['operators'].append('>=')
-        if '<=' in query or 'less than or equal' in query:
-            entities['operators'].append('<=')
-        if '=' in query or 'equal' in query:
-            entities['operators'].append('=')
+        # Extract "field < value" patterns
+        less_patterns = re.finditer(r'(sales|profit|quantity|discount|revenue)\s*(?:less than|<)\s*(\d+\.?\d*)', query)
+        for match in less_patterns:
+            field, value = match.groups()
+            conditions.append({
+                'field': field,
+                'operator': '<',
+                'value': float(value)
+            })
         
-        # Extract numeric values
-        numbers = re.findall(r'\b\d+\.?\d*\b', query)
-        entities['values'] = [float(n) for n in numbers if float(n) not in entities['years']]
+        # Extract "field between X and Y" patterns
+        between_patterns = re.finditer(
+            r'(sales|profit|quantity|discount|revenue)\s+between\s+(\d+\.?\d*)\s+and\s+(\d+\.?\d*)', 
+            query
+        )
+        for match in between_patterns:
+            field, lower, upper = match.groups()
+            conditions.append({
+                'field': field,
+                'operator': '>=',
+                'value': float(lower)
+            })
+            conditions.append({
+                'field': field,
+                'operator': '<=',
+                'value': float(upper)
+            })
         
-        return entities
+        # Extract "quantity greater than X" style patterns
+        qty_patterns = re.finditer(r'quantity\s+(?:greater than|>)\s+(\d+)', query)
+        for match in qty_patterns:
+            value = match.group(1)
+            conditions.append({
+                'field': 'quantity',
+                'operator': '>',
+                'value': float(value)
+            })
+        
+        return conditions
     
-    def detect_intent(self, query: str) -> List[str]:
+    def extract_grouping_fields(self, query: str) -> List[str]:
         """
-        Detect the intent/operations in the query.
-        
-        Returns:
-            List of detected intents (e.g., ['filter', 'group', 'aggregate'])
+        Extract ALL grouping fields from the query.
+        Each unique grouping creates a separate task.
         """
-        intents = []
+        group_fields = []
         
-        # Check for filtering intent
-        if any(keyword in query for keyword in self.filter_keywords):
-            intents.append('filter')
+        # Look for explicit "by" patterns
+        by_patterns = re.finditer(r'by\s+(region|category|product|segment|ship_mode|state|year|month)', query)
+        for match in by_patterns:
+            field = match.group(1)
+            if field not in group_fields:
+                group_fields.append(field)
         
-        # Check for grouping intent
-        if any(keyword in query for keyword in self.group_keywords):
-            intents.append('group')
+        # Look for "per" patterns
+        per_patterns = re.finditer(r'per\s+(region|category|product|segment|customer)', query)
+        for match in per_patterns:
+            field = match.group(1)
+            if field not in group_fields:
+                group_fields.append(field)
         
-        # Check for aggregation intent
-        if any(keyword in query for keyword in self.aggregate_keywords):
-            intents.append('aggregate')
+        # Look for implicit grouping in phrase structure
+        for field in ['region', 'category', 'product', 'segment', 'ship_mode', 'state']:
+            if field in query and field not in group_fields:
+                # Check if it's in a grouping context (not just a filter)
+                if any(kw in query for kw in self.group_keywords):
+                    group_fields.append(field)
         
-        # Check for comparison intent
-        if any(keyword in query for keyword in self.compare_keywords):
-            intents.append('compare')
-        
-        # Default to filter if no intent detected
-        if not intents:
-            intents.append('filter')
-        
-        return intents
+        return group_fields
     
-    def extract_aggregation_type(self, query: str) -> str:
+    def extract_aggregations(self, query: str) -> List[Dict[str, Any]]:
         """
-        Determine the type of aggregation (sum, avg, count, etc.)
+        Extract ALL aggregation operations from the query.
+        Each aggregation becomes a separate task.
         """
-        if 'sum' in query or 'total' in query:
-            return 'sum'
-        elif 'average' in query or 'avg' in query or 'mean' in query:
-            return 'avg'
-        elif 'count' in query or 'number of' in query:
-            return 'count'
-        elif 'max' in query or 'maximum' in query or 'highest' in query:
-            return 'max'
-        elif 'min' in query or 'minimum' in query or 'lowest' in query:
-            return 'min'
-        else:
-            return 'sum'  # Default
-    
-    def decompose_query(self, query: str) -> Dict[str, Any]:
-        """
-        Main function to decompose a natural language query into structured tasks.
+        aggregations = []
         
-        Args:
-            query: Natural language query string
-            
-        Returns:
-            Dictionary containing decomposed tasks and metadata
+        # Pattern: "sum of sales", "total sales", "average profit", etc.
+        agg_patterns = [
+            (r'\b(sum|total)\s+(?:of\s+)?(sales|revenue|profit|quantity|discount)', 'sum'),
+            (r'\b(average|avg|mean)\s+(?:of\s+)?(sales|revenue|profit|quantity|discount)', 'avg'),
+            (r'\b(count|number)\s+(?:of\s+)?(sales|orders|customers|products|quantity)', 'count'),
+            (r'\b(max|maximum|highest)\s+(?:of\s+)?(sales|revenue|profit|quantity)', 'max'),
+            (r'\b(min|minimum|lowest)\s+(?:of\s+)?(sales|revenue|profit|quantity|discount)', 'min'),
+        ]
+        
+        for pattern, agg_type in agg_patterns:
+            matches = re.finditer(pattern, query)
+            for match in matches:
+                field = match.group(2)
+                aggregations.append({
+                    'type': agg_type,
+                    'field': field
+                })
+        
+        # If no explicit aggregations found, infer from context
+        if not aggregations:
+            if 'total' in query or 'sum' in query:
+                aggregations.append({'type': 'sum', 'field': 'sales'})
+            if 'average' in query or 'avg' in query:
+                aggregations.append({'type': 'avg', 'field': 'profit'})
+            if 'count' in query:
+                aggregations.append({'type': 'count', 'field': 'quantity'})
+        
+        return aggregations
+    
+    def decompose_query_parallel(self, query: str) -> Dict[str, Any]:
         """
-        # Preprocess
+        Main function to decompose query into PARALLEL tasks.
+        
+        Key difference from original: Creates independent tasks at same level
+        instead of sequential dependencies.
+        """
         query = self.preprocess(query)
         
-        # Extract entities and intents
-        entities = self.extract_entities(query)
-        intents = self.detect_intent(query)
-        
-        # Build tasks based on intents
         tasks = []
         task_id = 1
+        filter_task_ids = []
+        group_task_ids = []
         
-        # Create filter task if filtering is needed
-        if 'filter' in intents or entities['years'] or entities['operators']:
-            filter_conditions = []
-            
-            # Add year filters
-            if entities['years']:
-                for year in entities['years']:
-                    filter_conditions.append({
-                        'field': 'year',
-                        'operator': '=',
-                        'value': year
-                    })
-            
-            # Add value filters
-            if entities['operators'] and entities['values']:
-                for i, op in enumerate(entities['operators']):
-                    if i < len(entities['values']):
-                        # Try to match with a field
-                        field = 'sales'  # Default field
-                        if entities['fields'] and len(entities['fields']) > i:
-                            field = entities['fields'][i]
-                        
-                        filter_conditions.append({
-                            'field': field,
-                            'operator': op,
-                            'value': entities['values'][i]
-                        })
-            
-            if filter_conditions:
-                tasks.append({
-                    'task_id': f'T{task_id}',
-                    'operation': 'filter',
-                    'conditions': filter_conditions,
-                    'depends_on': []
-                })
-                task_id += 1
+        # LEVEL 0: Create INDEPENDENT filter tasks (can run in parallel)
+        conditions = self.extract_all_conditions(query)
+        for condition in conditions:
+            tasks.append({
+                'task_id': f'T{task_id}',
+                'operation': 'filter',
+                'conditions': [condition],  # ONE condition per task
+                'depends_on': [],  # NO dependencies = can run in parallel
+                'level': 0
+            })
+            filter_task_ids.append(f'T{task_id}')
+            task_id += 1
         
-        # Create group task if grouping is needed
-        if 'group' in intents:
-            group_by = []
-            
-            # Determine grouping fields
-            if 'region' in query:
-                group_by.append('region')
-            if 'product' in query or 'category' in query:
-                group_by.append('product')
-            if 'year' in query and 'year' not in [e['field'] for e in tasks[0]['conditions']] if tasks else True:
-                group_by.append('year')
-            if 'month' in query:
-                group_by.append('month')
-            
-            if not group_by:
-                group_by = ['region']  # Default grouping
-            
+        # LEVEL 1: Create INDEPENDENT grouping tasks (can run in parallel after filters)
+        group_fields = self.extract_grouping_fields(query)
+        for field in group_fields:
             tasks.append({
                 'task_id': f'T{task_id}',
                 'operation': 'group',
-                'group_by': group_by,
-                'depends_on': [tasks[-1]['task_id']] if tasks else []
+                'group_by': [field],  # ONE field per task
+                'depends_on': filter_task_ids,  # Wait for ALL filters
+                'level': 1
             })
+            group_task_ids.append(f'T{task_id}')
             task_id += 1
         
-        # Create aggregate task if aggregation is needed
-        if 'aggregate' in intents or any(kw in query for kw in self.aggregate_keywords):
-            agg_type = self.extract_aggregation_type(query)
-            agg_field = 'sales'  # Default
-            
-            # Determine aggregation field
-            if 'revenue' in query:
-                agg_field = 'revenue'
-            elif 'profit' in query:
-                agg_field = 'profit'
-            elif 'quantity' in query:
-                agg_field = 'quantity'
-            
+        # LEVEL 2: Create INDEPENDENT aggregation tasks (can run in parallel after grouping)
+        aggregations = self.extract_aggregations(query)
+        for agg in aggregations:
             tasks.append({
                 'task_id': f'T{task_id}',
                 'operation': 'aggregate',
-                'agg_type': agg_type,
-                'agg_field': agg_field,
-                'depends_on': [tasks[-1]['task_id']] if tasks else []
+                'agg_type': agg['type'],
+                'agg_field': agg['field'],
+                'depends_on': group_task_ids if group_task_ids else filter_task_ids,
+                'level': 2
             })
             task_id += 1
         
-        # If no tasks created, create a default "fetch all" task
+        # If no tasks created, create a default fetch task
         if not tasks:
             tasks.append({
                 'task_id': 'T1',
                 'operation': 'fetch',
                 'conditions': [],
-                'depends_on': []
+                'depends_on': [],
+                'level': 0
             })
         
-        # Build result structure
+        # Calculate parallelization metrics
+        levels = {}
+        for task in tasks:
+            level = task.get('level', 0)
+            if level not in levels:
+                levels[level] = []
+            levels[level].append(task['task_id'])
+        
         result = {
             'original_query': query,
-            'intents': intents,
-            'entities': entities,
             'tasks': tasks,
-            'total_tasks': len(tasks)
+            'total_tasks': len(tasks),
+            'parallelization_info': {
+                'total_levels': len(levels),
+                'tasks_per_level': {f'Level {k}': len(v) for k, v in levels.items()},
+                'max_parallel_tasks': max(len(v) for v in levels.values()) if levels else 0,
+                'theoretical_speedup': round(len(tasks) / len(levels), 2) if levels else 1.0
+            }
         }
         
         return result
     
-    def get_task_json(self, query: str) -> str:
+    def visualize_parallel_execution(self, result: Dict[str, Any]) -> str:
         """
-        Get decomposed tasks in JSON format.
+        Create a visual representation showing parallel execution.
         """
-        decomposed = self.decompose_query(query)
-        return json.dumps(decomposed, indent=2)
+        output = "\n" + "="*80 + "\n"
+        output += "PARALLEL EXECUTION PLAN\n"
+        output += "="*80 + "\n\n"
+        
+        # Group by level
+        levels = {}
+        for task in result['tasks']:
+            level = task.get('level', 0)
+            if level not in levels:
+                levels[level] = []
+            levels[level].append(task)
+        
+        # Display each level
+        for level in sorted(levels.keys()):
+            output += f"⏱️  LEVEL {level} - Execute in PARALLEL ({len(levels[level])} tasks)\n"
+            output += "-" * 80 + "\n"
+            
+            for task in levels[level]:
+                output += f"  [{task['task_id']}] {task['operation'].upper()}: "
+                
+                if task['operation'] == 'filter':
+                    cond = task['conditions'][0]
+                    output += f"{cond['field']} {cond['operator']} {cond['value']}"
+                elif task['operation'] == 'group':
+                    output += f"by {task['group_by'][0]}"
+                elif task['operation'] == 'aggregate':
+                    output += f"{task['agg_type']}({task['agg_field']})"
+                
+                if task.get('depends_on'):
+                    output += f"  [waits for: {', '.join(task['depends_on'])}]"
+                
+                output += "\n"
+            
+            output += "\n"
+        
+        # Summary
+        info = result['parallelization_info']
+        output += "📊 PARALLELIZATION SUMMARY\n"
+        output += "-" * 80 + "\n"
+        output += f"Total Tasks: {result['total_tasks']}\n"
+        output += f"Execution Levels: {info['total_levels']}\n"
+        output += f"Max Parallel Tasks: {info['max_parallel_tasks']}\n"
+        output += f"Theoretical Speedup: {info['theoretical_speedup']}x\n"
+        output += f"Tasks per Level: {info['tasks_per_level']}\n"
+        
+        return output
 
 
-# Example usage
+# Test with complex queries
 if __name__ == '__main__':
-    processor = NLPQueryProcessor()
+    processor = ParallelNLPQueryProcessor()
     
-    # Test queries
     test_queries = [
-        "Show me total sales by region for 2023",
-        "Find all products where sales > 10000 and group by category",
-        "Compare average revenue between 2022 and 2023",
-        "What is the total profit by region where year = 2023"
+        """Show me the total sales and average profit by region and category 
+        for year 2023 where sales greater than 5000 and discount less than 0.2, 
+        and also count the number of orders for each segment""",
+        
+        # """Compare the sum of sales, maximum profit, minimum discount, and count of quantity
+        # grouped by region, category, and segment for years 2022 and 2023
+        # where profit greater than 1000""",
+        
+        # """Find total revenue and average discount by region, product, and ship_mode
+        # for year 2023 where sales between 1000 and 50000 and quantity greater than 5"""
     ]
     
-    for query in test_queries:
-        print(f"\nQuery: {query}")
-        print("=" * 70)
-        result = processor.decompose_query(query)
+    for i, query in enumerate(test_queries, 1):
+        print(f"\n{'='*80}")
+        print(f"TEST QUERY {i}")
+        print(f"{'='*80}")
+        print(f"Query: {query}\n")
+        
+        result = processor.decompose_query_parallel(query)
+        
+        # Show JSON output
+        print("JSON OUTPUT:")
         print(json.dumps(result, indent=2))
+        
+        # Show visualization
+        print(processor.visualize_parallel_execution(result))
+        print("\n")

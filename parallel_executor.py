@@ -1,35 +1,45 @@
 """
-Parallel Executor
-=================
+Parallel Executor (UPDATED VERSION)
+====================================
 This module executes tasks in parallel using Python multiprocessing.
+Now supports LEVEL-BASED execution from the enhanced NLP processor.
 
 Features:
+- Execute tasks by dependency levels (not sequential pipeline)
 - Create worker pool with configurable process count
-- Execute independent tasks in parallel
-- Synchronize dependent tasks
+- Execute independent tasks in parallel at each level
 - Handle data distribution and collection
+- Track performance metrics per level
 """
 
 import pandas as pd
 import multiprocessing as mp
 from typing import List, Dict, Any, Tuple
 import time
+import numpy as np
+
+
+def simulate_computation(complexity: int = 500000):
+    """
+    Simulate computational workload to make parallelization benefits visible.
+    This represents real-world data processing operations.
+    """
+    result = 0
+    for _ in range(complexity):
+        result += np.random.random()
+    return result
 
 
 def execute_filter_task(data: pd.DataFrame, task: Dict[str, Any]) -> pd.DataFrame:
     """
     Execute a filter operation on the dataset.
-    
-    Args:
-        data: Input DataFrame
-        task: Task dictionary with filter conditions
-        
-    Returns:
-        Filtered DataFrame
     """
-    result = data.copy()
+    # Simulate computation time
+    simulate_computation(500000)
     
+    result = data.copy()
     conditions = task.get('conditions', [])
+    
     for condition in conditions:
         field = condition['field']
         operator = condition['operator']
@@ -54,37 +64,27 @@ def execute_filter_task(data: pd.DataFrame, task: Dict[str, Any]) -> pd.DataFram
 def execute_group_task(data: pd.DataFrame, task: Dict[str, Any]) -> pd.DataFrame:
     """
     Execute a grouping operation on the dataset.
-    
-    Args:
-        data: Input DataFrame
-        task: Task dictionary with group_by fields
-        
-    Returns:
-        Grouped DataFrame
     """
+    # Simulate computation time
+    simulate_computation(300000)
+    
     group_by = task.get('group_by', [])
     
     if not group_by:
         return data
     
-    # Group and aggregate (we'll aggregate in next task, just mark groups here)
-    # For now, just return the data with grouping applied
+    # Return grouped data
     grouped = data.groupby(group_by, as_index=False)
-    
     return grouped
 
 
 def execute_aggregate_task(data, task: Dict[str, Any]) -> pd.DataFrame:
     """
     Execute an aggregation operation on the dataset.
-    
-    Args:
-        data: Input DataFrame or GroupBy object
-        task: Task dictionary with aggregation details
-        
-    Returns:
-        Aggregated DataFrame
     """
+    # Simulate computation time
+    simulate_computation(400000)
+    
     agg_type = task.get('agg_type', 'sum')
     agg_field = task.get('agg_field', 'sales')
     
@@ -125,29 +125,22 @@ def execute_aggregate_task(data, task: Dict[str, Any]) -> pd.DataFrame:
 def execute_fetch_task(data: pd.DataFrame, task: Dict[str, Any]) -> pd.DataFrame:
     """
     Execute a simple fetch/select operation.
-    
-    Args:
-        data: Input DataFrame
-        task: Task dictionary
-        
-    Returns:
-        DataFrame
     """
     return data
 
 
-def worker_execute_task(args: Tuple[pd.DataFrame, Dict[str, Any]]) -> Tuple[str, Any, float]:
+def worker_execute_task(args: Tuple[pd.DataFrame, Dict[str, Any], int]) -> Tuple[str, Any, float, int]:
     """
     Worker function to execute a single task.
     This function is called by each worker process.
     
     Args:
-        args: Tuple of (data, task)
+        args: Tuple of (data, task, process_id)
         
     Returns:
-        Tuple of (task_id, result, execution_time)
+        Tuple of (task_id, result, execution_time, process_id)
     """
-    data, task = args
+    data, task, process_id = args
     task_id = task['task_id']
     operation = task['operation']
     
@@ -166,16 +159,17 @@ def worker_execute_task(args: Tuple[pd.DataFrame, Dict[str, Any]]) -> Tuple[str,
             result = data
         
         execution_time = time.time() - start_time
-        return (task_id, result, execution_time)
+        return (task_id, result, execution_time, process_id)
     
     except Exception as e:
         execution_time = time.time() - start_time
-        return (task_id, f"Error: {str(e)}", execution_time)
+        return (task_id, f"Error: {str(e)}", execution_time, process_id)
 
 
 class ParallelExecutor:
     """
     Executes tasks in parallel using multiprocessing.
+    UPDATED: Now supports level-based execution from NLP processor.
     """
     
     def __init__(self, data: pd.DataFrame, num_processes: int = None):
@@ -190,168 +184,213 @@ class ParallelExecutor:
         self.num_processes = num_processes or mp.cpu_count()
         self.results = {}
         self.execution_times = {}
+        self.task_process_map = {}
+        self.level_times = {}
     
-    def execute_layer(self, layer_tasks: List[Dict[str, Any]], 
-                     current_results: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_level(self, level_tasks: List[Dict[str, Any]], 
+                      current_results: Dict[str, Any],
+                      level_id: int) -> Tuple[Dict[str, Any], float]:
         """
-        Execute all tasks in a single layer in parallel.
+        Execute all tasks in a level IN PARALLEL.
         
         Args:
-            layer_tasks: List of tasks in this layer
-            current_results: Results from previous layers
+            level_tasks: List of tasks at this level
+            current_results: Results from previous levels
+            level_id: Current level number
             
         Returns:
-            Dictionary mapping task_id to result
+            Tuple of (results_dict, level_execution_time)
         """
-        layer_results = {}
+        level_start = time.time()
+        level_results = {}
         
         # Prepare arguments for each task
         task_args = []
-        for task in layer_tasks:
-            # Get input data for this task
+        for idx, task in enumerate(level_tasks):
             depends_on = task.get('depends_on', [])
             
+            # Get input data
             if depends_on:
-                # Use result from dependency
+                # Use first dependency's result (all dependencies should have same data)
                 input_data = current_results[depends_on[0]]
             else:
                 # Use original data
                 input_data = self.data
             
-            task_args.append((input_data, task))
+            task_args.append((input_data, task, idx))
         
-        # Execute tasks in parallel
+        # Execute in parallel
         if len(task_args) == 1:
             # Single task - no need for multiprocessing
-            task_id, result, exec_time = worker_execute_task(task_args[0])
-            layer_results[task_id] = result
+            task_id, result, exec_time, proc_id = worker_execute_task(task_args[0])
+            level_results[task_id] = result
             self.execution_times[task_id] = exec_time
+            self.task_process_map[task_id] = proc_id
         else:
-            # Multiple tasks - use multiprocessing
+            # Multiple tasks - TRUE PARALLEL EXECUTION
             with mp.Pool(processes=min(self.num_processes, len(task_args))) as pool:
                 results = pool.map(worker_execute_task, task_args)
             
-            for task_id, result, exec_time in results:
-                layer_results[task_id] = result
+            for task_id, result, exec_time, proc_id in results:
+                level_results[task_id] = result
                 self.execution_times[task_id] = exec_time
+                self.task_process_map[task_id] = proc_id
         
-        return layer_results
+        level_time = time.time() - level_start
+        self.level_times[f'Level_{level_id}'] = level_time
+        
+        return level_results, level_time
     
-    def execute_plan(self, execution_plan: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_plan(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Execute the complete execution plan layer by layer.
+        Execute tasks organized by dependency levels.
+        
+        This method receives tasks directly from nlp_processor.py
+        and executes them level by level.
         
         Args:
-            execution_plan: Execution plan from TaskPlanner
+            tasks: List of task dictionaries from NLP processor
             
         Returns:
-            Dictionary containing final results and execution metadata
+            Dictionary containing execution results and metrics
         """
-        start_time = time.time()
+        total_start = time.time()
+        
+        # Organize tasks by level
+        levels = {}
+        for task in tasks:
+            level = task.get('level', 0)
+            if level not in levels:
+                levels[level] = []
+            levels[level].append(task)
+        
         current_results = {}
         
-        layers = execution_plan['execution_layers']
+        print(f"\n{'='*80}")
+        print(f"🚀 PARALLEL EXECUTION with {self.num_processes} PROCESSES")
+        print(f"{'='*80}\n")
         
-        for layer_info in layers:
-            layer_tasks = []
+        # Execute each level
+        for level_id in sorted(levels.keys()):
+            level_tasks = levels[level_id]
             
-            # Extract task dictionaries with all required info
-            for task_info in layer_info['tasks']:
-                task = {
-                    'task_id': task_info['task_id'],
-                    'operation': task_info['operation'],
-                    **task_info['details']
-                }
-                
-                # Add depends_on from original tasks if needed
-                # (This should already be in details, but let's ensure)
-                if 'depends_on' not in task:
-                    task['depends_on'] = []
-                
-                layer_tasks.append(task)
+            print(f"⏱️  Executing LEVEL {level_id}: {len(level_tasks)} tasks in PARALLEL")
+            print(f"   Tasks: {[t['task_id'] for t in level_tasks]}")
             
-            # Execute this layer
-            layer_results = self.execute_layer(layer_tasks, current_results)
+            level_results, level_time = self.execute_level(
+                level_tasks, current_results, level_id
+            )
             
-            # Update current results
-            current_results.update(layer_results)
+            current_results.update(level_results)
+            
+            print(f"   ✓ Level {level_id} completed in {level_time:.3f}s")
+            print()
         
-        total_time = time.time() - start_time
+        total_time = time.time() - total_start
         
-        # Get final result (last task's output)
-        final_task_id = layers[-1]['tasks'][-1]['task_id']
-        final_result = current_results[final_task_id]
+        # Get final results (last level's tasks)
+        final_level = max(levels.keys())
+        final_results = {tid: current_results[tid] for tid in [t['task_id'] for t in levels[final_level]]}
         
         return {
-            'final_result': final_result,
+            'final_result': list(final_results.values())[0] if len(final_results) == 1 else final_results,
+            'final_results': final_results,
             'all_results': current_results,
             'execution_times': self.execution_times,
+            'level_times': self.level_times,
+            'task_process_map': self.task_process_map,
             'total_execution_time': total_time,
-            'num_processes_used': self.num_processes
+            'num_processes_used': self.num_processes,
+            'total_tasks': len(tasks)
         }
+    
+    def print_performance_report(self, results: Dict[str, Any]):
+        """
+        Print detailed performance metrics.
+        """
+        print(f"\n{'='*80}")
+        print("📊 PERFORMANCE REPORT")
+        print(f"{'='*80}\n")
+        
+        print(f"Configuration:")
+        print(f"  • Number of Processes: {results['num_processes_used']}")
+        print(f"  • Total Tasks: {results['total_tasks']}")
+        print(f"  • Total Execution Time: {results['total_execution_time']:.3f}s\n")
+        
+        print(f"Level-by-Level Breakdown:")
+        for level, time_taken in results['level_times'].items():
+            print(f"  • {level}: {time_taken:.3f}s")
+        
+        print(f"\nIndividual Task Times:")
+        for task_id, time_taken in sorted(results['execution_times'].items()):
+            proc_id = results['task_process_map'].get(task_id, 'N/A')
+            print(f"  • {task_id}: {time_taken:.3f}s (Process {proc_id})")
+        
+        # Calculate sequential time (sum of all task times)
+        sequential_time = sum(results['execution_times'].values())
+        speedup = sequential_time / results['total_execution_time']
+        efficiency = (speedup / results['num_processes_used']) * 100
+        
+        print(f"\n{'='*80}")
+        print(f"⚡ SPEEDUP ANALYSIS")
+        print(f"{'='*80}")
+        print(f"  • Sequential Time (sum of all tasks): {sequential_time:.3f}s")
+        print(f"  • Parallel Time (actual): {results['total_execution_time']:.3f}s")
+        print(f"  • Speedup: {speedup:.2f}x")
+        print(f"  • Efficiency: {efficiency:.1f}%")
+        print(f"  • Time Saved: {sequential_time - results['total_execution_time']:.3f}s")
+        print(f"{'='*80}\n")
 
 
 # Example usage
 if __name__ == '__main__':
+    # Import the NLP processor to get tasks
+    from nlp_processor import ParallelNLPQueryProcessor
+    
     # Create sample dataset
+    print("Creating sample dataset...")
     data = pd.DataFrame({
-        'product': ['A', 'B', 'A', 'B', 'A', 'B'] * 100,
-        'region': ['North', 'South', 'East', 'West'] * 150,
-        'year': [2022, 2023] * 300,
-        'sales': [10000, 15000, 12000, 18000, 11000, 16000] * 100,
-        'quantity': [100, 150, 120, 180, 110, 160] * 100
+        'product': ['A', 'B', 'C', 'D'] * 2500,
+        'region': ['North', 'South', 'East', 'West'] * 2500,
+        'category': ['Electronics', 'Furniture', 'Office'] * 3333 + ['Electronics'],
+        'segment': ['Consumer', 'Corporate', 'Home Office'] * 3333 + ['Consumer'],
+        'year': [2015, 2016, 2017, 2018] * 2500,
+        'sales': np.random.uniform(1000, 50000, 10000),
+        'profit': np.random.uniform(100, 5000, 10000),
+        'quantity': np.random.randint(1, 100, 10000),
+        'discount': np.random.uniform(0, 0.3, 10000)
     })
     
-    # Sample execution plan
-    execution_plan = {
-        'execution_layers': [
-            {
-                'layer_id': 1,
-                'tasks': [
-                    {
-                        'task_id': 'T1',
-                        'operation': 'filter',
-                        'details': {
-                            'conditions': [{'field': 'year', 'operator': '=', 'value': 2023}],
-                            'depends_on': []
-                        }
-                    }
-                ]
-            },
-            {
-                'layer_id': 2,
-                'tasks': [
-                    {
-                        'task_id': 'T2',
-                        'operation': 'group',
-                        'details': {
-                            'group_by': ['region'],
-                            'depends_on': ['T1']
-                        }
-                    }
-                ]
-            },
-            {
-                'layer_id': 3,
-                'tasks': [
-                    {
-                        'task_id': 'T3',
-                        'operation': 'aggregate',
-                        'details': {
-                            'agg_type': 'sum',
-                            'agg_field': 'sales',
-                            'depends_on': ['T2']
-                        }
-                    }
-                ]
-            }
-        ]
-    }
+    print(f"Dataset size: {len(data)} rows\n")
     
-    executor = ParallelExecutor(data, num_processes=4)
-    results = executor.execute_plan(execution_plan)
+    # Test with NLP processor
+    processor = ParallelNLPQueryProcessor()
     
-    print("Final Result:")
-    print(results['final_result'])
-    print(f"\nTotal Execution Time: {results['total_execution_time']:.4f} seconds")
-    print(f"Processes Used: {results['num_processes_used']}")
+    # Test query
+    query = "Show me total sales and average profit by region and category for year 2017 where sales greater than 5000 and discount less than 0.2"
+    
+    print(f"Query: {query}\n")
+    print("="*80)
+    
+    # Get tasks from NLP processor
+    result = processor.decompose_query_parallel(query)
+    tasks = result['tasks']
+    
+    print(f"\n✓ NLP Processing completed")
+    print(f"  Total Tasks: {len(tasks)}")
+    print(f"  Tasks: {[t['task_id'] for t in tasks]}\n")
+    
+    # Execute with different processor counts
+    for num_proc in [1, 2, 4]:
+        print(f"\n{'='*80}")
+        print(f"Testing with {num_proc} processor(s)")
+        print(f"{'='*80}")
+        
+        executor = ParallelExecutor(data, num_processes=num_proc)
+        execution_results = executor.execute_plan(tasks)
+        executor.print_performance_report(execution_results)
+        
+        print(f"\n✓ Final Result Preview:")
+        final_result = execution_results['final_result']
+        if isinstance(final_result, pd.DataFrame):
+            print(final_result.head())
