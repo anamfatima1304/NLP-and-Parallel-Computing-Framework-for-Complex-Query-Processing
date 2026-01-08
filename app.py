@@ -1,383 +1,247 @@
 """
-Flask Web Application - WORKING VERSION
-========================================
-Uses your existing files:
-- nlp_processor.py with ParallelNLPQueryProcessor
-- parallel_executor.py with ParallelExecutor
-
-NO TaskPlanner, NO aggregator needed.
+PDC Project - Flask Web Application
+====================================
+Interactive web interface for NLP query processing with parallel execution.
 """
 
 from flask import Flask, render_template, request, jsonify
 import pandas as pd
-import os
+import numpy as np
 import json
-import traceback
 from nlp_processor import ParallelNLPQueryProcessor
 from parallel_executor import ParallelExecutor
+import multiprocessing as mp
 
 app = Flask(__name__)
 
-# Global variables
-DATA = None
-NLP_PROCESSOR = None
+# Global dataset
+DATASET = None
+processor = ParallelNLPQueryProcessor()
 
-
-def initialize_system():
-    """Initialize the system with dataset and components."""
-    global DATA, NLP_PROCESSOR
+def initialize_dataset():
+    """Initialize the sample dataset."""
+    global DATASET
+    np.random.seed(42)
+    dataset_size = 10000
     
-    # Path to your Kaggle dataset
-    data_file = 'data/superstore.csv'
-    
-    if not os.path.exists('data'):
-        os.makedirs('data')
-    
-    if not os.path.exists(data_file):
-        print("=" * 70)
-        print("WARNING: Kaggle dataset not found!")
-        print(f"Please place your CSV file at: {data_file}")
-        print("=" * 70)
-        print("\nCreating sample dataset as fallback...")
-        
-        # Create sample data
-        import numpy as np
-        DATA = pd.DataFrame({
-            'product': ['Phones', 'Chairs', 'Binders', 'Tables', 'Storage'] * 2000,
-            'region': ['North', 'South', 'East', 'West'] * 2500,
-            'category': ['Technology', 'Furniture', 'Office Supplies'] * 3333 + ['Technology'],
-            'segment': ['Consumer', 'Corporate', 'Home Office'] * 3333 + ['Consumer'],
-            'year': [2015, 2016, 2017, 2018] * 2500,
-            'month': list(range(1, 13)) * 833 + [1] * 4,
-            'sales': np.random.uniform(100, 10000, 10000),
-            'profit': np.random.uniform(-500, 3000, 10000),
-            'quantity': np.random.randint(1, 50, 10000),
-            'discount': np.random.uniform(0, 0.5, 10000),
-            'customer': [f'Customer_{i%1000}' for i in range(10000)],
-        })
-        DATA['revenue'] = DATA['sales']
-        if not os.path.exists('data'):
-            os.makedirs('data')
-        DATA.to_csv('data/sample_data.csv', index=False)
-        print(f"✓ Sample dataset created with {len(DATA)} records")
-    else:
-        print(f"Loading dataset from {data_file}...")
-        DATA = pd.read_csv(data_file, encoding='latin1')
-        
-        # Column name standardization for Kaggle Superstore
-        if 'Order Date' in DATA.columns:
-            print("Detected Kaggle Superstore format - standardizing columns...")
-            
-            column_mapping = {
-                'Order Date': 'order_date',
-                'Ship Date': 'ship_date',
-                'Ship Mode': 'ship_mode',
-                'Customer ID': 'customer_id',
-                'Customer Name': 'customer',
-                'Segment': 'segment',
-                'Country': 'country',
-                'City': 'city',
-                'State': 'state',
-                'Postal Code': 'postal_code',
-                'Region': 'region',
-                'Product ID': 'product_id',
-                'Category': 'category',
-                'Sub-Category': 'product',
-                'Product Name': 'product_name',
-                'Sales': 'sales',
-                'Quantity': 'quantity',
-                'Discount': 'discount',
-                'Profit': 'profit'
-            }
-            
-            DATA = DATA.rename(columns=column_mapping)
-            DATA['order_date'] = pd.to_datetime(DATA['order_date'])
-            DATA['year'] = DATA['order_date'].dt.year
-            DATA['month'] = DATA['order_date'].dt.month
-            DATA['revenue'] = DATA['sales']
-            DATA = DATA.dropna(subset=['sales', 'region', 'year'])
-            
-            if 'Row ID' in DATA.columns:
-                DATA = DATA.rename(columns={'Row ID': 'transaction_id'})
-            
-            print("✓ Data standardization completed")
-    
-    # Initialize NLP processor
-    NLP_PROCESSOR = ParallelNLPQueryProcessor()
-    
-    # Print dataset summary
-    print(f"\n{'='*70}")
-    print("DATASET LOADED SUCCESSFULLY")
-    print(f"{'='*70}")
-    print(f"Total Records: {len(DATA):,}")
-    print(f"Date Range: {DATA['year'].min()} - {DATA['year'].max()}")
-    print(f"Regions: {DATA['region'].nunique()}")
-    print(f"Categories: {DATA['category'].nunique()}")
-    print(f"Total Sales: ${DATA['sales'].sum():,.2f}")
-    print(f"{'='*70}\n")
-
-
-def convert_to_json_serializable(obj):
-    """Convert DataFrames and other non-serializable objects to JSON format."""
-    if isinstance(obj, pd.DataFrame):
-        return {
-            'type': 'dataframe',
-            'data': obj.to_dict('records'),
-            'columns': list(obj.columns),
-            'row_count': len(obj)
-        }
-    elif isinstance(obj, pd.core.groupby.DataFrameGroupBy):
-        df = obj.first().reset_index()
-        return {
-            'type': 'grouped_dataframe',
-            'data': df.to_dict('records'),
-            'columns': list(df.columns),
-            'row_count': len(df)
-        }
-    elif isinstance(obj, dict):
-        return {k: convert_to_json_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_to_json_serializable(item) for item in obj]
-    else:
-        return obj
-
+    DATASET = pd.DataFrame({
+        'product': np.random.choice(['Laptop', 'Phone', 'Tablet', 'Monitor', 'Keyboard', 'Mouse'], dataset_size),
+        'region': np.random.choice(['North', 'South', 'East', 'West', 'Central'], dataset_size),
+        'category': np.random.choice(['Electronics', 'Furniture', 'Office Supplies'], dataset_size),
+        'segment': np.random.choice(['Consumer', 'Corporate', 'Home Office'], dataset_size),
+        'ship_mode': np.random.choice(['Standard', 'Express', 'Same Day', 'Second Class'], dataset_size),
+        'state': np.random.choice(['CA', 'TX', 'NY', 'FL', 'IL', 'PA', 'OH', 'WA'], dataset_size),
+        'year': np.random.choice([2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023], dataset_size),
+        'month': np.random.choice(range(1, 13), dataset_size),
+        'sales': np.random.uniform(100, 50000, dataset_size),
+        'profit': np.random.uniform(-500, 5000, dataset_size),
+        'quantity': np.random.randint(1, 100, dataset_size),
+        'discount': np.random.uniform(0, 0.4, dataset_size)
+    })
 
 @app.route('/')
 def index():
     """Render the main page."""
-    return render_template('index.html')
+    max_cpus = mp.cpu_count()
+    return render_template('index.html', max_cpus=max_cpus)
 
+@app.route('/api/database-info', methods=['GET'])
+def get_database_info():
+    """Get database statistics and information."""
+    if DATASET is None:
+        return jsonify({'error': 'Dataset not initialized'}), 500
+    
+    # Basic stats
+    stats = {
+        'total_records': len(DATASET),
+        'total_columns': len(DATASET.columns),
+        'memory_usage_mb': round(DATASET.memory_usage(deep=True).sum() / 1024**2, 2),
+        'columns': []
+    }
+    
+    # Column information
+    for col in DATASET.columns:
+        col_info = {
+            'name': col,
+            'dtype': str(DATASET[col].dtype),
+            'non_null': int(DATASET[col].count()),
+            'unique': int(DATASET[col].nunique())
+        }
+        
+        if DATASET[col].dtype in ['int64', 'float64']:
+            col_info['stats'] = {
+                'min': round(float(DATASET[col].min()), 2),
+                'max': round(float(DATASET[col].max()), 2),
+                'mean': round(float(DATASET[col].mean()), 2),
+                'median': round(float(DATASET[col].median()), 2),
+                'std': round(float(DATASET[col].std()), 2)
+            }
+        else:
+            # Top 5 categories
+            top_values = DATASET[col].value_counts().head(5)
+            col_info['top_values'] = [
+                {'value': str(val), 'count': int(count), 'percentage': round((count/len(DATASET))*100, 1)}
+                for val, count in top_values.items()
+            ]
+        
+        stats['columns'].append(col_info)
+    
+    # Sample data
+    stats['sample_data'] = DATASET.head(10).to_dict('records')
+    
+    return jsonify(stats)
 
-@app.route('/api/process_query', methods=['POST'])
+@app.route('/api/process-query', methods=['POST'])
 def process_query():
-    """
-    Process a natural language query through the complete pipeline.
-    """
-    try:
-        # Get request data
-        req_data = request.get_json()
-        query = req_data.get('query', '')
-        num_processes = int(req_data.get('num_processes', 4))
-        
-        if not query:
-            return jsonify({'error': 'Query is required'}), 400
-        
-        print(f"\n{'='*70}")
-        print(f"Processing Query: {query}")
-        print(f"Processors: {num_processes}")
-        print(f"{'='*70}")
-        
-        # Step 1: NLP Processing
-        decomposed = NLP_PROCESSOR.decompose_query_parallel(query)
-        print(f"\n✓ NLP Decomposition: {decomposed['total_tasks']} tasks created")
-        
-        # Step 2: Parallel Execution
-        executor = ParallelExecutor(DATA, num_processes=num_processes)
-        execution_results = executor.execute_plan(decomposed['tasks'])
-        
-        print(f"\n✓ Execution completed in {execution_results['total_execution_time']:.3f}s")
-        
-        # Step 3: Format response
-        response = {
-            'status': 'success',
-            'query': query,
-            
-            # NLP Info
-            'nlp_decomposition': {
-                'total_tasks': decomposed['total_tasks'],
-                'tasks': decomposed['tasks'],
-                'parallelization_info': decomposed.get('parallelization_info', {})
-            },
-            
-            # Execution Info
-            'execution': {
-                'num_processes': execution_results['num_processes_used'],
-                'total_time': round(execution_results['total_execution_time'], 3),
-                'sequential_time': round(sum(execution_results['execution_times'].values()), 3),
-                'speedup': round(sum(execution_results['execution_times'].values()) / execution_results['total_execution_time'], 2),
-                'level_times': execution_results.get('level_times', {}),
-                'task_times': execution_results['execution_times']
-            },
-            
-            # Results
-            'results': convert_to_json_serializable(execution_results.get('final_results', {}))
-        }
-        
-        return jsonify(response)
+    """Process NLP query and return decomposition."""
+    data = request.json
+    query = data.get('query', '')
     
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"\n❌ ERROR: {str(e)}")
-        print(error_trace)
-        
-        return jsonify({
-            'status': 'error',
-            'error': str(e),
-            'traceback': error_trace
-        }), 500
-
-
-@app.route('/api/compare_processors', methods=['POST'])
-def compare_processors():
-    """Compare performance with different processor counts."""
-    try:
-        req_data = request.get_json()
-        query = req_data.get('query', '')
-        
-        if not query:
-            return jsonify({'error': 'Query is required'}), 400
-        
-        print(f"\n{'='*70}")
-        print(f"PROCESSOR COMPARISON: {query}")
-        print(f"{'='*70}")
-        
-        # Get tasks from NLP
-        decomposed = NLP_PROCESSOR.decompose_query_parallel(query)
-        tasks = decomposed['tasks']
-        
-        # Test different processor counts
-        import multiprocessing as mp
-        processor_counts = [1, 2, 4, mp.cpu_count()]
-        comparison = {}
-        
-        for num_proc in processor_counts:
-            print(f"\nTesting with {num_proc} processor(s)...")
-            
-            executor = ParallelExecutor(DATA, num_processes=num_proc)
-            results = executor.execute_plan(tasks)
-            
-            sequential = sum(results['execution_times'].values())
-            parallel = results['total_execution_time']
-            
-            comparison[str(num_proc)] = {
-                'processors': num_proc,
-                'total_time': round(parallel, 3),
-                'sequential_time': round(sequential, 3),
-                'speedup': round(sequential / parallel, 2),
-                'efficiency': round((sequential / parallel / num_proc) * 100, 1)
-            }
-        
-        # Add baseline comparison
-        baseline = comparison['1']['total_time']
-        for key in comparison:
-            comparison[key]['speedup_vs_1proc'] = round(baseline / comparison[key]['total_time'], 2)
-        
-        print(f"\n✓ Comparison completed")
-        
-        return jsonify({
-            'status': 'success',
-            'query': query,
-            'task_count': len(tasks),
-            'comparison': comparison
-        })
+    if not query:
+        return jsonify({'error': 'No query provided'}), 400
     
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"\n❌ ERROR: {str(e)}")
-        print(error_trace)
-        
-        return jsonify({
-            'status': 'error',
-            'error': str(e),
-            'traceback': error_trace
-        }), 500
-
-
-@app.route('/api/example_queries', methods=['GET'])
-def get_example_queries():
-    """Return example queries."""
-    examples = [
-        {
-            'query': 'Show me total sales and average profit by region and category for year 2017 where sales greater than 5000 and discount less than 0.2',
-            'description': 'Complex query with multiple filters, groups, and aggregations (8 tasks)',
-            'complexity': 'High'
-        },
-        {
-            'query': 'Show me total sales by region for 2017',
-            'description': 'Simple filter, group, and aggregate (3 tasks)',
-            'complexity': 'Low'
-        },
-        {
-            'query': 'Find average profit by category where sales greater than 1000 for year 2016',
-            'description': 'Multiple filters with grouping (4 tasks)',
-            'complexity': 'Medium'
-        },
-        {
-            'query': 'What is the sum of sales and count of quantity by region for years 2015 and 2016',
-            'description': 'Multi-year with multiple aggregations (6 tasks)',
-            'complexity': 'High'
-        },
-        {
-            'query': 'Show maximum profit by segment where year = 2017',
-            'description': 'Simple filter and aggregation (3 tasks)',
-            'complexity': 'Low'
-        }
-    ]
-    return jsonify(examples)
-
-
-@app.route('/api/dataset_info', methods=['GET'])
-def get_dataset_info():
-    """Return dataset information."""
     try:
-        info = {
-            'total_records': int(len(DATA)),
-            'columns': list(DATA.columns),
-            'date_range': {
-                'min_year': int(DATA['year'].min()),
-                'max_year': int(DATA['year'].max())
-            },
-            'unique_values': {
-                'regions': int(DATA['region'].nunique()),
-                'categories': int(DATA['category'].nunique()),
-                'products': int(DATA['product'].nunique())
-            },
-            'financial_summary': {
-                'total_sales': float(DATA['sales'].sum()),
-                'avg_sales': float(DATA['sales'].mean()),
-                'total_quantity': int(DATA['quantity'].sum())
-            }
+        # Decompose query
+        result = processor.decompose_query_parallel(query)
+        
+        # Format tasks by level
+        levels = {}
+        for task in result['tasks']:
+            level = task.get('level', 0)
+            if level not in levels:
+                levels[level] = []
+            levels[level].append(task)
+        
+        formatted_result = {
+            'original_query': result['original_query'],
+            'total_tasks': result['total_tasks'],
+            'parallelization_info': result['parallelization_info'],
+            'levels': {str(k): v for k, v in levels.items()},
+            'tasks': result['tasks']
         }
-        return jsonify(info)
+        
+        return jsonify(formatted_result)
+    
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/execute-query', methods=['POST'])
+def execute_query():
+    """Execute query with specified number of processors."""
+    data = request.json
+    tasks = data.get('tasks', [])
+    num_processors = data.get('num_processors', 1)
+    
+    if not tasks:
+        return jsonify({'error': 'No tasks provided'}), 400
+    
+    try:
+        # Execute with parallel executor
+        executor = ParallelExecutor(DATASET, num_processes=num_processors)
+        exec_results = executor.execute_plan(tasks)
+        
+        # Format results
+        final_result = exec_results['final_result']
+        
+        result_data = None
+        result_shape = None
+        
+        if isinstance(final_result, pd.DataFrame):
+            result_data = final_result.to_dict('records')
+            result_shape = {'rows': final_result.shape[0], 'columns': final_result.shape[1]}
+        elif isinstance(final_result, dict):
+            result_data = final_result
+        else:
+            result_data = str(final_result)
+        
+        # Calculate metrics
+        sequential_time = sum(exec_results['execution_times'].values())
+        parallel_time = exec_results['total_execution_time']
+        speedup = sequential_time / parallel_time if parallel_time > 0 else 0
+        efficiency = (speedup / num_processors) * 100
+        time_saved = sequential_time - parallel_time
+        
+        # Process utilization
+        process_usage = {}
+        for task_id, proc_id in exec_results['task_process_map'].items():
+            proc_key = str(proc_id)
+            if proc_key not in process_usage:
+                process_usage[proc_key] = []
+            process_usage[proc_key].append(task_id)
+        
+        formatted_result = {
+            'num_processors': num_processors,
+            'total_tasks': exec_results['total_tasks'],
+            'total_execution_time': round(exec_results['total_execution_time'], 3),
+            'level_times': {k: round(v, 3) for k, v in exec_results['level_times'].items()},
+            'task_times': {k: round(v, 3) for k, v in exec_results['execution_times'].items()},
+            'task_process_map': exec_results['task_process_map'],
+            'metrics': {
+                'sequential_time': round(sequential_time, 3),
+                'parallel_time': round(parallel_time, 3),
+                'speedup': round(speedup, 2),
+                'efficiency': round(efficiency, 1),
+                'time_saved': round(time_saved, 3),
+                'time_saved_percentage': round((time_saved/sequential_time)*100, 1) if sequential_time > 0 else 0
+            },
+            'process_usage': process_usage,
+            'result_data': result_data,
+            'result_shape': result_shape
+        }
+        
+        return jsonify(formatted_result)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/system_info', methods=['GET'])
-def get_system_info():
-    """Return system information."""
-    import multiprocessing as mp
-    return jsonify({
-        'cpu_count': mp.cpu_count(),
-        'dataset_size': len(DATA),
-        'processor_type': 'ParallelNLPQueryProcessor',
-        'executor_type': 'ParallelExecutor',
-        'features': [
-            'Level-based parallel execution',
-            'Independent task processing',
-            'Real-time speedup calculation',
-            'Multi-processor comparison'
-        ]
-    })
-
+@app.route('/api/compare-processors', methods=['POST'])
+def compare_processors():
+    """Compare execution with multiple processor configurations."""
+    data = request.json
+    tasks = data.get('tasks', [])
+    processor_counts = data.get('processor_counts', [1, 2, 4])
+    
+    if not tasks:
+        return jsonify({'error': 'No tasks provided'}), 400
+    
+    try:
+        comparison_results = []
+        
+        for proc_count in processor_counts:
+            executor = ParallelExecutor(DATASET, num_processes=proc_count)
+            exec_results = executor.execute_plan(tasks)
+            
+            sequential_time = sum(exec_results['execution_times'].values())
+            parallel_time = exec_results['total_execution_time']
+            speedup = sequential_time / parallel_time if parallel_time > 0 else 0
+            efficiency = (speedup / proc_count) * 100
+            
+            comparison_results.append({
+                'processors': proc_count,
+                'execution_time': round(parallel_time, 3),
+                'speedup': round(speedup, 2),
+                'efficiency': round(efficiency, 1),
+                'sequential_time': round(sequential_time, 3)
+            })
+        
+        # Calculate relative speedup (compared to single processor)
+        baseline_time = comparison_results[0]['execution_time']
+        for result in comparison_results:
+            result['relative_speedup'] = round(baseline_time / result['execution_time'], 2)
+            result['time_saved'] = round(baseline_time - result['execution_time'], 3)
+        
+        return jsonify({'comparisons': comparison_results})
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Initialize system
-    initialize_system()
-    
-    # Run Flask app
-    print("\n" + "=" * 70)
-    print("NLP & Parallel Computing Framework")
-    print("=" * 70)
+    print("Initializing PDC Flask Application...")
+    print("Generating sample dataset...")
+    initialize_dataset()
+    print(f"Dataset ready: {len(DATASET)} rows")
+    print(f"Available CPUs: {mp.cpu_count()}")
     print("\nStarting Flask server...")
-    print("Navigate to: http://localhost:5000")
-    print("\nAPI Endpoints:")
-    print("  POST /api/process_query - Process a query")
-    print("  POST /api/compare_processors - Compare processor counts")
-    print("  GET  /api/example_queries - Get example queries")
-    print("  GET  /api/dataset_info - Get dataset info")
-    print("  GET  /api/system_info - Get system info")
-    print("\nPress CTRL+C to stop the server")
-    print("=" * 70 + "\n")
-    
+    print("Open your browser and navigate to: http://127.0.0.1:5000")
+    print("\nPress Ctrl+C to stop the server")
     app.run(debug=True, host='0.0.0.0', port=5000)

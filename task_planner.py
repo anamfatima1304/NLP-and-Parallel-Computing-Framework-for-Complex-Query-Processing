@@ -1,72 +1,99 @@
-"""
-Task Planner
-============
-This module builds a Directed Acyclic Graph (DAG) from decomposed tasks
-and creates an execution plan for parallel processing.
-
-Features:
-- Build DAG from task dependencies
-- Identify tasks that can run in parallel
-- Create execution layers
-- Validate task dependencies
-"""
-
-from typing import List, Dict, Any, Set
+import re
+import json
+import pandas as pd
+import multiprocessing as mp
+from typing import List, Dict, Any, Tuple
 from collections import defaultdict, deque
-
+import time
+import numpy as np
 
 class TaskPlanner:
     """
-    Creates an execution plan from decomposed tasks using DAG analysis.
+    Creates execution plan with DAG analysis.
+    NOW handles ALL dependency and level logic (removed from NLP processor).
     """
     
-    def __init__(self, tasks: List[Dict[str, Any]]):
+    def __init__(self):
+        self.tasks = []
+        self.dag = defaultdict(list)
+        self.in_degree = defaultdict(int)
+    
+    def create_tasks_from_query(self, query_components: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Initialize the planner with a list of tasks.
+        Convert parsed query components into tasks with dependencies.
+        This is the NEW responsibility moved from nlp_processor.
+        """
+        tasks = []
+        task_id = 1
+        filter_task_ids = []
+        group_task_ids = []
         
-        Args:
-            tasks: List of task dictionaries from NLP processor
-        """
+        # Create INDEPENDENT filter tasks
+        for condition in query_components['filters']:
+            tasks.append({
+                'task_id': f'T{task_id}',
+                'operation': 'filter',
+                'conditions': [condition],
+                'depends_on': []
+            })
+            filter_task_ids.append(f'T{task_id}')
+            task_id += 1
+        
+        # Create INDEPENDENT grouping tasks (depend on filters)
+        for field in query_components['groupings']:
+            tasks.append({
+                'task_id': f'T{task_id}',
+                'operation': 'group',
+                'group_by': [field],
+                'depends_on': filter_task_ids
+            })
+            group_task_ids.append(f'T{task_id}')
+            task_id += 1
+        
+        # Create INDEPENDENT aggregation tasks
+        for agg in query_components['aggregations']:
+            tasks.append({
+                'task_id': f'T{task_id}',
+                'operation': 'aggregate',
+                'agg_type': agg['type'],
+                'agg_field': agg['field'],
+                'depends_on': group_task_ids if group_task_ids else filter_task_ids
+            })
+            task_id += 1
+        
+        # If no tasks, create default fetch
+        if not tasks:
+            tasks.append({
+                'task_id': 'T1',
+                'operation': 'fetch',
+                'conditions': [],
+                'depends_on': []
+            })
+        
         self.tasks = {task['task_id']: task for task in tasks}
-        self.dag = defaultdict(list)  # adjacency list
-        self.in_degree = defaultdict(int)  # incoming edges count
-        self.execution_plan = []
-        
+        return tasks
+    
     def build_dag(self):
-        """
-        Build the DAG from task dependencies.
-        Each task lists tasks it depends on (incoming edges).
-        We need to reverse this to create outgoing edges for the DAG.
-        """
-        # Initialize in_degree for all tasks
+        """Build DAG from task dependencies"""
         for task_id in self.tasks:
             self.in_degree[task_id] = 0
         
-        # Build adjacency list and calculate in-degrees
         for task_id, task in self.tasks.items():
             depends_on = task.get('depends_on', [])
-            
             for dependency in depends_on:
-                # dependency -> task_id edge
                 self.dag[dependency].append(task_id)
                 self.in_degree[task_id] += 1
     
     def topological_sort(self) -> List[List[str]]:
         """
-        Perform topological sort using Kahn's algorithm.
-        Returns tasks grouped by execution layers (tasks in same layer can run in parallel).
-        
-        Returns:
-            List of layers, where each layer is a list of task IDs
+        Perform topological sort to get execution layers.
+        Returns tasks grouped by layers (parallel execution within layer).
         """
-        # Find all tasks with no dependencies (in_degree = 0)
         queue = deque([task_id for task_id in self.tasks if self.in_degree[task_id] == 0])
-        
         layers = []
         visited = set()
         
         while queue:
-            # All tasks in current queue can run in parallel
             current_layer = []
             layer_size = len(queue)
             
@@ -75,141 +102,86 @@ class TaskPlanner:
                 current_layer.append(task_id)
                 visited.add(task_id)
                 
-                # Reduce in-degree for dependent tasks
                 for dependent in self.dag[task_id]:
                     self.in_degree[dependent] -= 1
-                    
-                    # If in-degree becomes 0, add to queue for next layer
                     if self.in_degree[dependent] == 0:
                         queue.append(dependent)
             
             if current_layer:
                 layers.append(current_layer)
         
-        # Check for cycles (if not all tasks visited)
         if len(visited) != len(self.tasks):
             raise ValueError("Cycle detected in task dependencies!")
         
         return layers
     
-    def create_execution_plan(self) -> Dict[str, Any]:
+    def create_execution_plan(self, query_components: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Create a complete execution plan with parallel execution groups.
+        Main function: Create complete execution plan with parallel layers.
+        """
+        # Step 1: Create tasks from parsed query
+        tasks = self.create_tasks_from_query(query_components)
         
-        Returns:
-            Dictionary containing execution layers and metadata
-        """
+        # Step 2: Build DAG
         self.build_dag()
+        
+        # Step 3: Get execution layers via topological sort
         layers = self.topological_sort()
         
-        # Build detailed execution plan
+        # Step 4: Build detailed execution plan
         execution_layers = []
-        
-        for layer_num, layer_tasks in enumerate(layers, 1):
+        for layer_num, layer_tasks in enumerate(layers):
             layer_info = {
                 'layer_id': layer_num,
                 'can_parallel': len(layer_tasks) > 1,
                 'num_tasks': len(layer_tasks),
-                'tasks': []
+                'task_ids': layer_tasks,
+                'tasks': [self.tasks[tid] for tid in layer_tasks]
             }
-            
-            for task_id in layer_tasks:
-                task = self.tasks[task_id]
-                layer_info['tasks'].append({
-                    'task_id': task_id,
-                    'operation': task['operation'],
-                    'details': {k: v for k, v in task.items() 
-                               if k not in ['task_id', 'operation', 'depends_on']}
-                })
-            
             execution_layers.append(layer_info)
         
-        plan = {
+        return {
+            'original_query': query_components['original_query'],
             'total_layers': len(execution_layers),
             'total_tasks': len(self.tasks),
-            'max_parallelism': max(len(layer) for layer in layers),
+            'max_parallelism': max(len(layer['task_ids']) for layer in execution_layers),
             'execution_layers': execution_layers,
-            'dag_structure': dict(self.dag)
+            'all_tasks': list(self.tasks.values())
         }
-        
-        self.execution_plan = plan
-        return plan
     
-    def get_parallel_groups(self) -> List[List[str]]:
-        """
-        Get groups of tasks that can be executed in parallel.
+    def visualize_plan(self, plan: Dict[str, Any]) -> str:
+        """Create visual representation of execution plan"""
+        output = "\n" + "="*80 + "\n"
+        output += "EXECUTION PLAN (DAG-based)\n"
+        output += "="*80 + "\n\n"
         
-        Returns:
-            List of task groups (each group can run in parallel)
-        """
-        if not self.execution_plan:
-            self.create_execution_plan()
-        
-        return [[task['task_id'] for task in layer['tasks']] 
-                for layer in self.execution_plan['execution_layers']]
-    
-    def visualize_dag(self) -> str:
-        """
-        Create a simple text visualization of the DAG.
-        
-        Returns:
-            String representation of the DAG
-        """
-        if not self.execution_plan:
-            self.create_execution_plan()
-        
-        viz = "Task Execution DAG:\n"
-        viz += "=" * 50 + "\n\n"
-        
-        for layer in self.execution_plan['execution_layers']:
-            viz += f"Layer {layer['layer_id']} "
-            viz += f"(Parallel: {layer['can_parallel']}, Tasks: {layer['num_tasks']})\n"
-            viz += "-" * 50 + "\n"
+        for layer in plan['execution_layers']:
+            output += f"⏱️  LAYER {layer['layer_id']} - "
+            output += f"{'PARALLEL' if layer['can_parallel'] else 'SEQUENTIAL'} "
+            output += f"({layer['num_tasks']} tasks)\n"
+            output += "-" * 80 + "\n"
             
             for task in layer['tasks']:
-                viz += f"  [{task['task_id']}] {task['operation']}\n"
+                output += f"  [{task['task_id']}] {task['operation'].upper()}"
                 
-                # Show dependencies
-                original_task = self.tasks[task['task_id']]
-                if original_task.get('depends_on'):
-                    viz += f"    Depends on: {', '.join(original_task['depends_on'])}\n"
-            
-            viz += "\n"
+                if task['operation'] == 'filter':
+                    cond = task['conditions'][0]
+                    output += f": {cond['field']} {cond['operator']} {cond['value']}"
+                elif task['operation'] == 'group':
+                    output += f": by {task['group_by'][0]}"
+                elif task['operation'] == 'aggregate':
+                    output += f": {task['agg_type']}({task['agg_field']})"
+                
+                if task.get('depends_on'):
+                    output += f"  [depends on: {', '.join(task['depends_on'])}]"
+                
+                output += "\n"
+            output += "\n"
         
-        return viz
-
-
-# Example usage
-if __name__ == '__main__':
-    # Sample tasks from NLP processor
-    sample_tasks = [
-        {
-            'task_id': 'T1',
-            'operation': 'filter',
-            'conditions': [{'field': 'year', 'operator': '=', 'value': 2023}],
-            'depends_on': []
-        },
-        {
-            'task_id': 'T2',
-            'operation': 'group',
-            'group_by': ['region'],
-            'depends_on': ['T1']
-        },
-        {
-            'task_id': 'T3',
-            'operation': 'aggregate',
-            'agg_type': 'sum',
-            'agg_field': 'sales',
-            'depends_on': ['T2']
-        }
-    ]
-    
-    planner = TaskPlanner(sample_tasks)
-    plan = planner.create_execution_plan()
-    
-    print("Execution Plan:")
-    print("=" * 70)
-    import json
-    print(json.dumps(plan, indent=2))
-    
-    print("\n" + planner.visualize_dag())
+        output += "📊 SUMMARY\n"
+        output += "-" * 80 + "\n"
+        output += f"Total Tasks: {plan['total_tasks']}\n"
+        output += f"Execution Layers: {plan['total_layers']}\n"
+        output += f"Max Parallel Tasks: {plan['max_parallelism']}\n"
+        
+        return output
