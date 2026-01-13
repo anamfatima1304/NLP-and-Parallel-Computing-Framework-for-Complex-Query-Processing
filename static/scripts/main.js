@@ -136,7 +136,10 @@ function displayPerformance(performance, results) {
     document.getElementById('exec-time').textContent = `${performance.execution_time}s`;
     document.getElementById('processors-used').textContent = performance.processors_used;
     document.getElementById('tasks-executed').textContent = performance.tasks_executed;
-    document.getElementById('result-rows').textContent = results.row_count || 'N/A';
+    
+    // Show actual row count from results
+    const rowCount = results.row_count !== null && results.row_count !== undefined ? results.row_count : 'N/A';
+    document.getElementById('result-rows').textContent = rowCount;
 }
 
 // Display query results

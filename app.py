@@ -76,17 +76,59 @@ def execute_query():
             query_components['original_query']
         )
         
-        # Format results for frontend
+        # Process and merge results from all tasks
+        all_results = execution_results.get('all_results', {})
+        
+        # Try to find and merge T5 and T6 or get final_result
         final_result = execution_results['final_result']
+        merged_df = None
+        
+        # Check if we have T5 and T6 tasks (Sales and Profit)
+        if 'T5' in all_results and 'T6' in all_results:
+            t5_df = all_results['T5']
+            t6_df = all_results['T6']
+            
+            # Reset index and remove index column if present
+            if isinstance(t5_df, pd.DataFrame):
+                t5_df = t5_df.reset_index(drop=True)
+                if 'index' in t5_df.columns:
+                    t5_df = t5_df.drop(columns=['index'])
+                    
+            if isinstance(t6_df, pd.DataFrame):
+                t6_df = t6_df.reset_index(drop=True)
+                if 'index' in t6_df.columns:
+                    t6_df = t6_df.drop(columns=['index'])
+            
+            # Merge on common columns (Region, Category)
+            if isinstance(t5_df, pd.DataFrame) and isinstance(t6_df, pd.DataFrame):
+                common_cols = [col for col in t5_df.columns if col in t6_df.columns and col not in ['Sales', 'Profit']]
+                if common_cols:
+                    merged_df = pd.merge(t5_df, t6_df, on=common_cols, how='outer')
+                else:
+                    # If no common columns, just concatenate side by side
+                    merged_df = pd.concat([t5_df, t6_df], axis=1)
+        
+        # Use merged result if available, otherwise use final_result
+        if merged_df is not None:
+            final_result = merged_df
+        elif isinstance(final_result, pd.DataFrame):
+            final_result = final_result.reset_index(drop=True)
+            if 'index' in final_result.columns:
+                final_result = final_result.drop(columns=['index'])
+        
+        # Format results for frontend
         result_data = None
         result_type = 'unknown'
+        result_count = 0
         
         if isinstance(final_result, pd.DataFrame):
             result_data = final_result.to_dict('records')
             result_type = 'dataframe'
+            result_count = len(final_result)
         else:
             result_data = str(final_result)
             result_type = 'text'
+            result_count = 0
         
         response = {
             'success': True,
@@ -108,7 +150,7 @@ def execute_query():
             'results': {
                 'type': result_type,
                 'data': result_data,
-                'row_count': len(final_result) if isinstance(final_result, pd.DataFrame) else None
+                'row_count': result_count
             }
         }
         
