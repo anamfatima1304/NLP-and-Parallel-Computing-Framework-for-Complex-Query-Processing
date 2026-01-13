@@ -21,6 +21,16 @@ if __name__=="__main__":
     print("🔍 Processing Query:")
     print(f"   \"{query.strip()}\"\n")
     print("="*80 + "\n")
+
+    data = pd.read_csv(r'data\superstore.csv', encoding='latin1')
+
+    # ADD THIS DEBUG CODE:
+    print("\n🔍 DEBUG: CSV Columns")
+    print("="*80)
+    print(f"Columns in dataset: {list(data.columns)}")
+    print(f"\nFirst row sample:")
+    print(data.head(1).to_dict('records'))
+    print("="*80)
     
     # ============================================================================
     # STEP 1: NLP PROCESSING (Parse Query Components)
@@ -113,4 +123,37 @@ if __name__=="__main__":
     
     print("\n" + "="*80)
     print("✅ PROCESSING COMPLETE")
+    print("="*80)
+
+    # Add this RIGHT AFTER the task planning step (after line ~35 in your main file)
+
+    print("\n🔍 DEBUG: Task Structure")
+    print("="*80)
+    for task in execution_plan['all_tasks']:
+        print(f"\nTask: {task['task_id']}")
+        print(f"  Operation: {task['operation']}")
+        print(f"  Depends on: {task.get('depends_on', [])}")
+        if task['operation'] == 'group':
+            print(f"  Group by: {task.get('group_by', [])}")
+        if task['operation'] == 'aggregate':
+            print(f"  Agg type: {task.get('agg_type')}")
+            print(f"  Agg field: {task.get('agg_field')}")
+    print("="*80)
+
+    # Add this RIGHT AFTER execution (after executor.execute_plan, around line ~60)
+
+    print("\n🔍 DEBUG: Execution Results")
+    print("="*80)
+    for task_id, result in execution_results['all_results'].items():
+        print(f"\n{task_id}:")
+        print(f"  Type: {type(result)}")
+        if isinstance(result, pd.DataFrame):
+            print(f"  Shape: {result.shape}")
+            print(f"  Columns: {list(result.columns)}")
+            print(f"  First row: {result.head(1).to_dict('records')}")
+        elif isinstance(result, pd.core.groupby.DataFrameGroupBy):
+            print(f"  GroupBy object - groups: {result.ngroups}")
+            print(f"  Grouping keys: {result.grouper.names}")
+        else:
+            print(f"  Value: {str(result)[:200]}")
     print("="*80)

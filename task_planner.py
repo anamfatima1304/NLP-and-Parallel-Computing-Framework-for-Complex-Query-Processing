@@ -22,11 +22,13 @@ class TaskPlanner:
         """
         Convert parsed query components into tasks with dependencies.
         This is the NEW responsibility moved from nlp_processor.
+        
+        FIXED: Create single group task with all grouping fields instead of separate tasks.
         """
         tasks = []
         task_id = 1
         filter_task_ids = []
-        group_task_ids = []
+        group_task_id = None
         
         # Create INDEPENDENT filter tasks
         for condition in query_components['filters']:
@@ -39,25 +41,33 @@ class TaskPlanner:
             filter_task_ids.append(f'T{task_id}')
             task_id += 1
         
-        # Create INDEPENDENT grouping tasks (depend on filters)
-        for field in query_components['groupings']:
+        # Create SINGLE grouping task with ALL grouping fields (FIXED)
+        if query_components['groupings']:
             tasks.append({
                 'task_id': f'T{task_id}',
                 'operation': 'group',
-                'group_by': [field],
-                'depends_on': filter_task_ids
+                'group_by': query_components['groupings'],  # All fields in one task
+                'depends_on': filter_task_ids if filter_task_ids else []
             })
-            group_task_ids.append(f'T{task_id}')
+            group_task_id = f'T{task_id}'
             task_id += 1
         
         # Create INDEPENDENT aggregation tasks
         for agg in query_components['aggregations']:
+            # Determine dependency: group task if exists, otherwise filter tasks
+            if group_task_id:
+                depends_on = [group_task_id]
+            elif filter_task_ids:
+                depends_on = filter_task_ids
+            else:
+                depends_on = []
+            
             tasks.append({
                 'task_id': f'T{task_id}',
                 'operation': 'aggregate',
                 'agg_type': agg['type'],
                 'agg_field': agg['field'],
-                'depends_on': group_task_ids if group_task_ids else filter_task_ids
+                'depends_on': depends_on
             })
             task_id += 1
         
@@ -168,7 +178,7 @@ class TaskPlanner:
                     cond = task['conditions'][0]
                     output += f": {cond['field']} {cond['operator']} {cond['value']}"
                 elif task['operation'] == 'group':
-                    output += f": by {task['group_by'][0]}"
+                    output += f": by {', '.join(task['group_by'])}"
                 elif task['operation'] == 'aggregate':
                     output += f": {task['agg_type']}({task['agg_field']})"
                 
@@ -185,3 +195,5 @@ class TaskPlanner:
         output += f"Max Parallel Tasks: {plan['max_parallelism']}\n"
         
         return output
+    
+    
