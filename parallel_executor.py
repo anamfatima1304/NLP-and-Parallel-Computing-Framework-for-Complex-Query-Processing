@@ -30,8 +30,8 @@ import numpy as np
 def simulate_computation(complexity: int = 500000):
     """Simulate computational workload"""
     result = 0
-    for _ in range(complexity):
-        result += np.random.random()
+    # for _ in range(complexity):
+    #     result += 1000
     return result
 
 
@@ -92,7 +92,7 @@ def execute_filter_task(data: pd.DataFrame, task: Dict[str, Any]) -> pd.DataFram
 
 def execute_group_task(data: pd.DataFrame, task: Dict[str, Any]) -> pd.DataFrame:
     """Execute grouping operation with case-insensitive column matching"""
-    simulate_computation(300000)
+    simulate_computation(500000)
     group_by = task.get('group_by', [])
     if not group_by:
         return data
@@ -111,7 +111,7 @@ def execute_group_task(data: pd.DataFrame, task: Dict[str, Any]) -> pd.DataFrame
 
 def execute_aggregate_task(data, task: Dict[str, Any]) -> pd.DataFrame:
     """Execute aggregation operation with case-insensitive column matching"""
-    simulate_computation(400000)
+    simulate_computation(500000)
     agg_type = task.get('agg_type', 'sum')
     agg_field = task.get('agg_field', 'sales')
     

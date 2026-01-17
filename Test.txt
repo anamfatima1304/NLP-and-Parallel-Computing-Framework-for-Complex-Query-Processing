@@ -1,0 +1,17 @@
+# 8 Parallel-Optimized Complex Queries (Different Groupings = Real Speedup)
+
+1. Show sum of sales by region and category for year 2016, and also show sum of profit by state and segment for year 2016, and also show average discount by ship mode and sub-category for year 2016 where sales greater than 10
+
+2. Calculate sum of sales by region and category for year 2015, and sum of sales by region and category for year 2016, and sum of profit by state and segment for year 2015, and sum of profit by state and segment for year 2016 where profit greater than -100
+
+3. Find sum of sales by region and sub-category for year 2016, and sum of profit by category and segment for year 2016, and average quantity by ship mode and region for year 2016, and count of order id by state and category for year 2016 where sales greater than 5
+
+4. Show sum of sales by state and category for year 2015, and sum of sales by state and category for year 2016, and sum of profit by region and sub-category for year 2015, and sum of profit by region and sub-category for year 2016, and average discount by segment and ship mode for year 2015, and average discount by segment and ship mode for year 2016
+
+5. Calculate sum of sales by region and category and segment for year 2016, and sum of profit by state and sub-category and ship mode for year 2016, and average discount by region and segment and category for year 2016, and count of order id by state and ship mode and category for year 2016 where sales greater than 1
+
+6. Find sum of sales by state and category for year 2014, and sum of sales by state and category for year 2015, and sum of sales by state and category for year 2016, and sum of profit by region and sub-category and segment for year 2014, and sum of profit by region and sub-category and segment for year 2015, and sum of profit by region and sub-category and segment for year 2016
+
+7. Show sum of sales by region and category and sub-category for year 2016, and sum of profit by state and segment and ship mode for year 2016, and average discount by region and sub-category and segment for year 2016, and average quantity by state and category and ship mode for year 2016, and count of order id by region and segment and category for year 2016 where sales greater than 1 and discount less than 0.8
+
+8. Calculate sum of sales by state and category and segment for year 2015, and sum of sales by state and category and segment for year 2016, and sum of profit by region and sub-category and ship mode for year 2015, and sum of profit by region and sub-category and ship mode for year 2016, and average discount by state and segment and category for year 2015, and average discount by state and segment and category for year 2016, and count of order id by region and category and ship mode for year 2015, and count of order id by region and category and ship mode for year 2016 where sales greater than 1

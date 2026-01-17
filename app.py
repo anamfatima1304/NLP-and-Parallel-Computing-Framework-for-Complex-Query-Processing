@@ -76,37 +76,81 @@ def execute_query():
             query_components['original_query']
         )
         
-        # Process and merge results from all tasks
+        # IMPROVED MERGING LOGIC - Handles ANY number of tasks
         all_results = execution_results.get('all_results', {})
-        
-        # Try to find and merge T5 and T6 or get final_result
-        final_result = execution_results['final_result']
+        final_result = execution_results.get('final_result')
         merged_df = None
         
-        # Check if we have T5 and T6 tasks (Sales and Profit)
-        if 'T5' in all_results and 'T6' in all_results:
-            t5_df = all_results['T5']
-            t6_df = all_results['T6']
+        # Filter out error results and get only DataFrames
+        valid_results = {}
+        for task_id, result in all_results.items():
+            if isinstance(result, pd.DataFrame):
+                valid_results[task_id] = result
+            elif isinstance(result, str) and 'Error' not in result:
+                # Try to handle non-error string results
+                pass
+        
+        # If we have multiple valid DataFrame results, merge them
+        if len(valid_results) > 1:
+            dfs_list = []
             
-            # Reset index and remove index column if present
-            if isinstance(t5_df, pd.DataFrame):
-                t5_df = t5_df.reset_index(drop=True)
-                if 'index' in t5_df.columns:
-                    t5_df = t5_df.drop(columns=['index'])
-                    
-            if isinstance(t6_df, pd.DataFrame):
-                t6_df = t6_df.reset_index(drop=True)
-                if 'index' in t6_df.columns:
-                    t6_df = t6_df.drop(columns=['index'])
+            # Clean each DataFrame
+            for task_id, df in valid_results.items():
+                df_clean = df.reset_index(drop=True)
+                if 'index' in df_clean.columns:
+                    df_clean = df_clean.drop(columns=['index'])
+                dfs_list.append(df_clean)
             
-            # Merge on common columns (Region, Category)
-            if isinstance(t5_df, pd.DataFrame) and isinstance(t6_df, pd.DataFrame):
-                common_cols = [col for col in t5_df.columns if col in t6_df.columns and col not in ['Sales', 'Profit']]
-                if common_cols:
-                    merged_df = pd.merge(t5_df, t6_df, on=common_cols, how='outer')
+            if len(dfs_list) > 0:
+                # Get the first DataFrame as base
+                merged_df = dfs_list[0]
+                
+                # Identify potential grouping columns from first DataFrame
+                # These are typically non-numeric columns or known dimension columns
+                known_dimensions = ['Region', 'Category', 'State', 'Segment', 'Ship Mode', 
+                                   'Sub-Category', 'City', 'Product Name', 'Customer Name',
+                                   'Product ID', 'Customer ID', 'Order ID', 'Year', 'Month']
+                
+                grouping_cols = []
+                for col in merged_df.columns:
+                    if col in known_dimensions or merged_df[col].dtype == 'object':
+                        grouping_cols.append(col)
+                
+                # Remove metric columns from grouping (Sales, Profit, Discount, Quantity, etc.)
+                metric_keywords = ['Sales', 'Profit', 'Discount', 'Quantity', 'Count', 
+                                  'Average', 'Sum', 'Min', 'Max', 'Total']
+                grouping_cols = [col for col in grouping_cols 
+                               if not any(keyword.lower() in col.lower() for keyword in metric_keywords)]
+                
+                # Merge all DataFrames
+                if grouping_cols:
+                    for df in dfs_list[1:]:
+                        # Find common grouping columns
+                        common_cols = [col for col in grouping_cols if col in df.columns]
+                        
+                        if common_cols:
+                            try:
+                                merged_df = pd.merge(merged_df, df, on=common_cols, how='outer')
+                            except Exception as e:
+                                print(f"Merge error: {e}, concatenating instead")
+                                # If merge fails, try concatenating
+                                merged_df = pd.concat([merged_df, df], axis=1)
+                        else:
+                            # No common columns, concatenate side by side
+                            merged_df = pd.concat([merged_df, df], axis=1)
                 else:
-                    # If no common columns, just concatenate side by side
-                    merged_df = pd.concat([t5_df, t6_df], axis=1)
+                    # No grouping columns found, concatenate all
+                    merged_df = pd.concat(dfs_list, axis=1)
+                
+                # Remove duplicate columns that might result from merging
+                merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
+        
+        elif len(valid_results) == 1:
+            # Only one result, use it directly
+            merged_df = list(valid_results.values())[0]
+            merged_df = merged_df.reset_index(drop=True)
+            if 'index' in merged_df.columns:
+                merged_df = merged_df.drop(columns=['index'])
         
         # Use merged result if available, otherwise use final_result
         if merged_df is not None:
@@ -125,8 +169,12 @@ def execute_query():
             result_data = final_result.to_dict('records')
             result_type = 'dataframe'
             result_count = len(final_result)
-        else:
+        elif final_result is not None:
             result_data = str(final_result)
+            result_type = 'text'
+            result_count = 0
+        else:
+            result_data = "No results returned"
             result_type = 'text'
             result_count = 0
         
@@ -138,14 +186,14 @@ def execute_query():
                 'aggregations': query_components.get('aggregations', [])
             },
             'execution_plan': {
-                'total_tasks': execution_plan['total_tasks'],
-                'total_layers': execution_plan['total_layers'],
-                'max_parallelism': execution_plan['max_parallelism']
+                'total_tasks': execution_plan.get('total_tasks', 0),
+                'total_layers': execution_plan.get('total_layers', 0),
+                'max_parallelism': execution_plan.get('max_parallelism', 0)
             },
             'performance': {
                 'execution_time': round(execution_time, 4),
                 'processors_used': num_processors,
-                'tasks_executed': len(execution_results.get('all_results', {}))
+                'tasks_executed': len(all_results)
             },
             'results': {
                 'type': result_type,
@@ -157,6 +205,9 @@ def execute_query():
         return jsonify(response)
         
     except Exception as e:
+        import traceback
+        print(f"Error in execute_query: {e}")
+        print(traceback.format_exc())
         return jsonify({
             'success': False,
             'error': str(e)
